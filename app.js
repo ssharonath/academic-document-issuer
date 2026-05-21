@@ -117,6 +117,13 @@ const modules = [
 const state = {
   view: "dashboard",
   role: "Super Admin",
+  auth: {
+    enabled: authEnabled,
+    checking: authEnabled,
+    user: null,
+    profile: null,
+    error: ""
+  },
   sidebarCollapsed: false,
   designerMaximized: false,
   designerToolsCollapsed: false,
@@ -220,6 +227,9 @@ function tableEl(id, x, y, w, h) {
 }
 
 const app = document.querySelector("#app");
+const appConfig = window.ACADEMIC_ISSUER_CONFIG || {};
+const authEnabled = Boolean(appConfig.supabaseUrl && appConfig.supabaseAnonKey && window.supabase);
+const supabaseClient = authEnabled ? window.supabase.createClient(appConfig.supabaseUrl, appConfig.supabaseAnonKey) : null;
 
 function can(permission) {
   const set = roles[state.role] || [];
@@ -299,6 +309,15 @@ function fieldLabel(key) {
 
 function render() {
   persist();
+  if (state.auth.enabled && state.auth.checking) {
+    app.innerHTML = `<div class="login-screen"><div class="login-card"><div class="brand-mark">A</div><h1>Academic Issuer</h1><p>Checking staff session...</p></div></div>`;
+    return;
+  }
+  if (state.auth.enabled && !state.auth.user) {
+    app.innerHTML = loginView();
+    bindLogin();
+    return;
+  }
   app.innerHTML = `
     <div class="app-shell ${state.sidebarCollapsed ? "sidebar-collapsed" : ""}">
       <aside class="sidebar">
@@ -312,9 +331,10 @@ function render() {
         </div>
         <div class="role-card">
           <label>Authority level
-            <select id="roleSelect">${Object.keys(roles).map(r => `<option ${r === state.role ? "selected" : ""}>${r}</option>`).join("")}</select>
+            <select id="roleSelect" ${state.auth.enabled ? "disabled" : ""}>${Object.keys(roles).map(r => `<option ${r === state.role ? "selected" : ""}>${r}</option>`).join("")}</select>
           </label>
           <span class="badge ${state.role === "Super Admin" ? "ok" : "warn"}">${state.role}</span>
+          ${state.auth.enabled ? `<button id="logoutUser">Logout</button>` : ""}
         </div>
         <nav class="nav">
           ${navButton("dashboard", "Dashboard", "▦")}
@@ -342,6 +362,84 @@ function render() {
   `;
   bindCommon();
   bindView();
+}
+
+function loginView() {
+  return `
+    <div class="login-screen">
+      <form id="loginForm" class="login-card">
+        <div class="brand-mark">A</div>
+        <h1>Academic Issuer</h1>
+        <p>Staff login is required to design, issue, verify, and export academic documents.</p>
+        <label>Email
+          <input id="loginEmail" type="email" autocomplete="email" required placeholder="admin@institution.edu"/>
+        </label>
+        <label>Password
+          <input id="loginPassword" type="password" autocomplete="current-password" required/>
+        </label>
+        ${state.auth.error ? `<div class="login-error">${escapeHtml(state.auth.error)}</div>` : ""}
+        <button class="primary" type="submit">Login</button>
+      </form>
+    </div>
+  `;
+}
+
+function bindLogin() {
+  document.querySelector("#loginForm")?.addEventListener("submit", async e => {
+    e.preventDefault();
+    const email = document.querySelector("#loginEmail").value.trim();
+    const password = document.querySelector("#loginPassword").value;
+    state.auth.error = "";
+    const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
+    if (error) {
+      state.auth.error = error.message || "Login failed";
+      render();
+      return;
+    }
+    await applyAuthSession(data.session);
+    audit("Staff logged in", email);
+    render();
+  });
+}
+
+async function applyAuthSession(session) {
+  state.auth.user = session?.user || null;
+  state.auth.profile = null;
+  if (!state.auth.user) return;
+  const { data } = await supabaseClient
+    .from("staff_profiles")
+    .select("full_name, role, active")
+    .eq("id", state.auth.user.id)
+    .single();
+  if (data && data.active !== false) {
+    state.auth.profile = data;
+    state.role = roles[data.role] ? data.role : "Viewer";
+  } else {
+    state.role = "Viewer";
+  }
+}
+
+async function initAuth() {
+  if (!authEnabled) return;
+  const { data } = await supabaseClient.auth.getSession();
+  await applyAuthSession(data.session);
+  state.auth.checking = false;
+  supabaseClient.auth.onAuthStateChange(async (_event, session) => {
+    await applyAuthSession(session);
+    state.auth.checking = false;
+    render();
+  });
+  render();
+}
+
+async function logoutUser() {
+  if (!authEnabled) return;
+  await supabaseClient.auth.signOut();
+  state.auth.user = null;
+  state.auth.profile = null;
+  state.auth.error = "";
+  audit("Staff logged out", "Session ended");
+  render();
 }
 
 function navButton(id, label, icon) {
@@ -1060,7 +1158,8 @@ function bindCommon() {
     render();
   });
   document.querySelectorAll("[data-nav]").forEach(btn => btn.addEventListener("click", () => { state.view = btn.dataset.nav; render(); }));
-  document.querySelector("#roleSelect").addEventListener("change", e => { state.role = e.target.value; audit("Authority level changed", `Active role set to ${state.role}`); render(); });
+  document.querySelector("#roleSelect")?.addEventListener("change", e => { state.role = e.target.value; audit("Authority level changed", `Active role set to ${state.role}`); render(); });
+  document.querySelector("#logoutUser")?.addEventListener("click", logoutUser);
   document.querySelector("#quickIssue")?.addEventListener("click", issueCertificate);
   document.querySelector("#runBulk")?.addEventListener("click", runBulk);
 }
@@ -2511,3 +2610,4 @@ function restore() {
 restore();
 audit("System started", "Advanced certificate and transcript issuer loaded");
 render();
+initAuth();

@@ -1,4 +1,4 @@
 window.ACADEMIC_ISSUER_CONFIG = {
   supabaseUrl: "https://mrbpkzajkvkhxohtkixm.supabase.co",
-  supabaseAnonKey: "PASTE_YOUR_SB_PUBLISHABLE_KEY_HERE"
+  supabaseAnonKey: "sb_publishable_dC-bVbIqwV5Vfmm3KrsKYA_uXUIQ39r"
 };
